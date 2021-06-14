@@ -404,6 +404,9 @@ clientsessionexitstatus_t sqlrprotocol_postgresql::clientSession(
 
 	// end the session if necessary
 	if (endsession) {
+		stmtcursormap.clear();
+		portalcursormap.clear();
+		executeflag.clear();
 		cont->endSession();
 	}
 
