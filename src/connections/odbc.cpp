@@ -2694,13 +2694,30 @@ bool odbccursor::inputBind(const char *variable,
 			}
 			valuesize=len(valueucs,encoding);
 			bufferlength=size(valueucs,encoding);
-			ucsinbindstrings.append(valueucs);
+			convertedinbindstrings.append(valueucs);
 			val=(SQLPOINTER)valueucs;
 			valtype=SQL_C_WCHAR;
 			paramtype=SQL_WVARCHAR;
 		} else {
 		#endif
+			#ifdef HAVE_WINDOWS
+			char	*err=NULL;
+			char *value_ansi=convertCharset(
+						value,valuesize,
+						"UTF-8",odbcconn->ansicodepage,
+						&err);
+			if (err) {
+				delete[] value_ansi;
+				setConvCharError("input bind",err);
+				return false;
+			}
+			valuesize=strlen(value_ansi);
+			bufferlength=valuesize;
+			convertedinbindstrings.append(value_ansi);
+			val=(SQLPOINTER)value_ansi;
+			#else
 			val=(SQLPOINTER)value;
+			#endif
 		#ifdef HAVE_SQLCONNECTW
 		}
 		#endif
