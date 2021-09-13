@@ -30,6 +30,11 @@
 
 #define MAX_LOB_CHUNK_SIZE	2147483647
 
+#if defined(_WIN32) || defined(_WIN64) || defined(WIN32) || defined(WIN64)
+#define HAVE_WINDOWS
+#endif
+// #define HAVE_SQLCONNECTW
+
 struct odbccolumn {
 	char		name[4096];
 	uint16_t	namelength;
@@ -275,8 +280,8 @@ class SQLRSERVER_DLLSPEC odbccursor : public sqlrservercursor {
 
 		stringbuffer	errormsg;
 
-		#ifdef HAVE_SQLCONNECTW
-		singlylinkedlist<char *>	ucsinbindstrings;
+		#if defined(HAVE_SQLCONNECTW) || defined(HAVE_WINDOWS)
+		singlylinkedlist<char *>	convertedinbindstrings;
 		#endif
 
 		bool		columninfoisvalidafterprepare;
@@ -381,7 +386,9 @@ class SQLRSERVER_DLLSPEC odbcconnection : public sqlrserverconnection {
 		const char	*overrideschema;
 		bool		unicode;
 		const char	*ncharencoding;
-
+		#ifdef HAVE_WINDOWS
+		UINT 		ansicodepage;
+		#endif
 		stringbuffer	errormessage;
 
 		char		dbversion[512];
@@ -402,9 +409,16 @@ class SQLRSERVER_DLLSPEC odbcconnection : public sqlrserverconnection {
 		#endif
 };
 
-#ifdef HAVE_SQLCONNECTW
-#include <iconv.h>
+#if defined(HAVE_SQLCONNECTW) || defined(HAVE_WINDOWS)
 
+#ifdef HAVE_WINDOWS
+#include <stringapiset.h>
+// #include <stdio.h>
+// #include <string.h>
+#else
+#include <iconv.h>
+#endif
+	
 void printerror(const char *error) {
 	char	*err=error::getErrorString();
 	stderror.printf("%s: %d - %s\n",error,error::getErrorNumber(),err);
@@ -637,6 +651,127 @@ size_t byteOrderMarkSize(const char *encoding) {
 	}
 }
 
+#ifdef HAVE_WINDOWS
+
+
+char *convertCharset(const char *inbuf,
+				size_t insize,
+				UINT inenc,
+				UINT outenc,
+				char **error) {
+	// initialize error
+	if (error) {
+		*error=NULL;
+	}
+	// printf("Convert %u to %u\n",inenc,outenc);
+	size_t mavail=MultiByteToWideChar(inenc, 0, inbuf, -1, NULL, 0);
+	WCHAR	*midbuf=new WCHAR[mavail];
+	mavail=MultiByteToWideChar(inenc, 0, inbuf, -1, midbuf, mavail);
+	size_t avail=WideCharToMultiByte(outenc,0,midbuf,mavail,NULL,0, NULL, NULL);
+	char	*outbuf=new char[avail];
+	avail=WideCharToMultiByte(outenc,0,midbuf,mavail,outbuf,avail, NULL, NULL);
+	delete[] midbuf;
+	return outbuf;
+}
+
+char *convertCharset(const char *inbuf,
+				size_t insize,
+				UINT inenc,
+				const char *outenc,
+				char **error) {
+	// initialize error
+	if (error) {
+		*error=NULL;
+	}
+	if (charstring::contains(outenc,"UTF-8") || charstring::contains(outenc,"UTF8")) {
+		return convertCharset(inbuf,insize,inenc,CP_UTF8,error);
+	} else {
+		return "";
+	}
+	
+}
+
+char *convertCharset(const char *inbuf,
+				size_t insize,
+				const char *inenc,
+				UINT outenc,
+				char **error) {
+	// initialize error
+	if (error) {
+		*error=NULL;
+	}
+	if(charstring::contains(inenc,"UTF-8") || charstring::contains(inenc,"UTF8")) {
+		return convertCharset(inbuf,insize,CP_UTF8,outenc,error);
+	} else {
+		return "";
+	}
+}
+
+char *convertCharset(const char *inbuf,
+				size_t insize,
+				const char *inenc,
+				const char *outenc,
+				char **error) {
+
+	// initialize error
+	if (error) {
+		*error=NULL;
+	}
+	// printf("Convert %s to %s\n",inenc,outenc);
+	if(charstring::contains(inenc,"UTF-8") || charstring::contains(inenc,"UTF8")) {
+		if (charstring::contains(outenc,"UCS-2") || charstring::contains(outenc,"UCS2")) {
+			// printf("UTF-8_to_UCS-2\n");
+			size_t avail=MultiByteToWideChar(CP_UTF8, 0, inbuf, -1, NULL, 0);
+			char	*outbuf=(char *)new WCHAR[avail];
+			avail=MultiByteToWideChar(CP_UTF8, 0, inbuf, -1, (LPWSTR)outbuf, avail);
+			return outbuf;
+		} else if (charstring::contains(outenc,"UCS4") ||
+			charstring::contains(outenc,"UCS-4") ||
+			charstring::contains(outenc,"UTF32") ||
+			charstring::contains(outenc,"UTF-32")) {
+				return convertCharset(inbuf,strlen(inbuf),inenc,12000,error);
+		} else {
+			return "";
+		}
+	} else if (charstring::contains(outenc,"UTF-8") || charstring::contains(outenc,"UTF8")) {
+		if (charstring::contains(inenc,"UCS-2") || charstring::contains(inenc,"UCS2")) {
+			// printf("UCS-2_to_UTF-8\n");
+			size_t	avail=WideCharToMultiByte(CP_UTF8,0,(LPCWCH)inbuf,-1,NULL,0, NULL, NULL);
+			char	*outbuf=new char[avail];
+			avail=WideCharToMultiByte(CP_UTF8,0,(LPCWCH)inbuf,-1,outbuf,avail, NULL, NULL);
+			return outbuf;
+		}  else if (charstring::contains(inenc,"UCS4") ||
+			charstring::contains(inenc,"UCS-4") ||
+			charstring::contains(inenc,"UTF32") ||
+			charstring::contains(inenc,"UTF-32")) {
+				return convertCharset(inbuf,strlen(inbuf),12000,outenc,error);
+		} else {
+			return "";
+		}
+	} else {
+		return "";
+	}
+	// return outbuf;
+}
+
+
+char *convertCharset(const char *inbuf,
+				UINT inenc,
+				const char *outenc,
+				char **error) {
+	return convertCharset(inbuf,strlen(inbuf),inenc,outenc,error);
+}
+
+char *convertCharset(const char *inbuf,
+				const char *inenc,
+				UINT outenc,
+				char **error) {
+	return convertCharset(inbuf,strlen(inbuf),inenc,outenc,error);
+}
+
+
+#else
+
 char *convertCharset(const char *inbuf,
 				size_t insize,
 				const char *inenc,
@@ -732,6 +867,7 @@ char *convertCharset(const char *inbuf,
 	}
 	return outbuf;
 }
+#endif
 
 char *convertCharset(const char *inbuf,
 				const char *inenc,
@@ -759,6 +895,9 @@ odbcconnection::odbcconnection(sqlrservercontroller *cont) :
 	unicode=true;
 	ncharencoding=NULL;
 	columninfonotvalidyeterror=NULL;
+	#ifdef HAVE_WINDOWS
+	ansicodepage=CP_ACP;
+	#endif
 }
 
 odbcconnection::~odbcconnection() {
@@ -766,9 +905,7 @@ odbcconnection::~odbcconnection() {
 }
 
 void odbcconnection::handleConnectString() {
-
 	sqlrserverconnection::handleConnectString();
-
 	driver=cont->getConnectStringValue("driver");
 	driverconnect=cont->getConnectStringValue("driverconnect");
 	dsn=cont->getConnectStringValue("dsn");
@@ -800,6 +937,15 @@ void odbcconnection::handleConnectString() {
 
 	// unixodbc doesn't support array fetches
 	cont->setFetchAtOnce(1);
+	#ifdef HAVE_WINDOWS
+	const char	*ansicodepage_s=cont->getConnectStringValue("ansicodepage");
+	if (ansicodepage_s) {
+		ansicodepage=std::atoi(ansicodepage_s);
+	} else {
+		ansicodepage=GetACP();
+	}
+	// printf("Codepage: %u\n",(unsigned int)ansicodepage);
+	#endif
 }
 
 bool odbcconnection::logIn(const char **error, const char **warning) {
@@ -959,9 +1105,33 @@ bool odbcconnection::logIn(const char **error, const char **warning) {
 			delete[] passworducs;
 		} else {
 		#endif
+		#ifdef HAVE_WINDOWS
+			char	*dsnansi=(dsnasc)?
+					convertCharset(dsnasc,
+							"UTF-8",
+							ansicodepage,
+							NULL):NULL;
+			char	*useransi=(userasc)?
+					convertCharset(userasc,
+							"UTF-8",
+							ansicodepage,
+							NULL):NULL;
+			char	*passwordansi=(passwordasc)?
+					convertCharset(passwordasc,
+							"UTF-8",
+							ansicodepage,
+							NULL):NULL;
+			erg=SQLConnect(dbc,(SQLCHAR *)dsnansi,SQL_NTS,
+					(SQLCHAR *)useransi,SQL_NTS,
+					(SQLCHAR *)passwordansi,SQL_NTS);
+			delete[] dsnansi;
+			delete[] useransi;
+			delete[] passwordansi;
+		#else
 			erg=SQLConnect(dbc,(SQLCHAR *)dsnasc,SQL_NTS,
 					(SQLCHAR *)userasc,SQL_NTS,
 					(SQLCHAR *)passwordasc,SQL_NTS);
+		#endif
 		#ifdef HAVE_SQLCONNECTW
 		}
 		#endif
@@ -2211,8 +2381,8 @@ odbccursor::~odbccursor() {
 	delete[] inoutcharbind;
 	delete[] inoutisnullptr;
 	delete[] inoutisnull;
-	#ifdef HAVE_SQLCONNECTW
-	ucsinbindstrings.clearAndArrayDelete();
+	#if defined(HAVE_SQLCONNECTW) || defined(HAVE_WINDOWS)
+	convertedinbindstrings.clearAndArrayDelete();
 	#endif
 	deallocateResultSetBuffers();
 }
@@ -2290,7 +2460,7 @@ bool odbccursor::prepareQuery(const char *query, uint32_t length) {
 	#ifdef HAVE_SQLCONNECTW
 	if (odbcconn->unicode) {
 
-		ucsinbindstrings.clearAndArrayDelete();
+		convertedinbindstrings.clearAndArrayDelete();
 
 		if (getExecuteDirect()) {
 			return true;
@@ -2309,10 +2479,22 @@ bool odbccursor::prepareQuery(const char *query, uint32_t length) {
 		delete[] queryucs;
 	} else {
 	#endif
+		#ifdef HAVE_WINDOWS
+		convertedinbindstrings.clearAndArrayDelete();
+		#endif
 		if (getExecuteDirect()) {
 			return true;
 		}
+		#ifdef HAVE_WINDOWS
+		char	*err=NULL;
+		SQLCHAR *query_ansi=(SQLCHAR *)convertCharset(query,length,
+						"UTF-8",odbcconn->ansicodepage,
+						&err);
+		erg=SQLPrepare(stmt,query_ansi,SQL_NTS);
+		delete[] query_ansi;
+		#else
 		erg=SQLPrepare(stmt,(SQLCHAR *)query,length);
+		#endif
 	#ifdef HAVE_SQLCONNECTW
 	}
 	#endif
@@ -2351,7 +2533,7 @@ bool odbccursor::prepareQuery(const char *query, uint32_t length) {
 		#ifdef HAVE_SQLCONNECTW
 		if (odbcconn->unicode) {
 
-			ucsinbindstrings.clearAndArrayDelete();
+			convertedinbindstrings.clearAndArrayDelete();
 
 			char *queryucs=convertCharset(query,length,
 							"UTF-8",
@@ -2361,7 +2543,17 @@ bool odbccursor::prepareQuery(const char *query, uint32_t length) {
 			delete[] queryucs;
 		} else {
 		#endif
+			#ifdef HAVE_WINDOWS
+			convertedinbindstrings.clearAndArrayDelete();
+			SQLCHAR *query_ansi=(SQLCHAR *)convertCharset(query,length,
+							"UTF-8",
+							odbcconn->ansicodepage,
+							NULL);
+			erg=SQLPrepare(stmt,query_ansi,SQL_NTS);
+			delete[] query_ansi;
+			#else
 			erg=SQLPrepare(stmt,(SQLCHAR *)query,length);
+			#endif
 		#ifdef HAVE_SQLCONNECTW
 		}
 		#endif
@@ -3213,7 +3405,7 @@ bool odbccursor::executeQuery(const char *query, uint32_t length) {
 
 	#ifdef HAVE_SQLCONNECTW
 		// free buffers used to convert string-binds to unicode
-		ucsinbindstrings.clearAndArrayDelete();
+		convertedinbindstrings.clearAndArrayDelete();
 	#endif
 
 	if (erg!=SQL_SUCCESS &&
@@ -3423,263 +3615,268 @@ bool odbccursor::handleColumns(bool getcolumninfo, bool bindcolumns) {
 
 			if (conn->cont->getSendColumnInfo()==SEND_COLUMN_INFO) {
 #if (ODBCVER >= 0x0300)
-				// column name
-				erg=SQLColAttribute(stmt,i+1,SQL_DESC_LABEL,
-						column[i].name,4096,
-						(SQLSMALLINT *)
-						&(column[i].namelength),
-						NULL);
-				if (erg!=SQL_SUCCESS &&
-					erg!=SQL_SUCCESS_WITH_INFO) {
-					return false;
-				}
-				column[i].namelength=
-					charstring::length(column[i].name);
-
-				// column length
-				erg=SQLColAttribute(stmt,i+1,SQL_DESC_LENGTH,
-						NULL,0,NULL,
-						&(column[i].length));
-				if (erg!=SQL_SUCCESS &&
-					erg!=SQL_SUCCESS_WITH_INFO) {
-					return false;
-				}
-	
-				// column type
-				erg=SQLColAttribute(stmt,i+1,SQL_DESC_TYPE,
-						NULL,0,NULL,
-						&(column[i].type));
-				if (erg!=SQL_SUCCESS &&
-					erg!=SQL_SUCCESS_WITH_INFO) {
-					return false;
-				}
-
-				// column precision
-				erg=SQLColAttribute(stmt,i+1,SQL_DESC_PRECISION,
-						NULL,0,NULL,
-						&(column[i].precision));
-				// Some drivers (Redshift) like to return -1
-				// for the precision of some (TEXT/NTEXT)
-				// columns.  This wreaks havoc on the client
-				// side, as the value is interpreted as 2^32-1.
-				// Override the -1 with the length.
-				if (column[i].precision==-1) {
-					column[i].precision=column[i].length;
-				}
-				if (erg!=SQL_SUCCESS &&
-					erg!=SQL_SUCCESS_WITH_INFO) {
-					return false;
-				}
-
-				// column scale
-				erg=SQLColAttribute(stmt,i+1,SQL_DESC_SCALE,
-						NULL,0,NULL,
-						&(column[i].scale));
-				if (erg!=SQL_SUCCESS &&
-					erg!=SQL_SUCCESS_WITH_INFO) {
-					return false;
-				}
-
-				// column nullable
-				erg=SQLColAttribute(stmt,i+1,SQL_DESC_NULLABLE,
-						NULL,0,NULL,
-						&(column[i].nullable));
-				if (erg!=SQL_SUCCESS &&
-					erg!=SQL_SUCCESS_WITH_INFO) {
-					return false;
-				}
-
-				// primary key
-
-				// unique
-
-				// part of key
-
-				// unsigned number
-				erg=SQLColAttribute(stmt,i+1,SQL_DESC_UNSIGNED,
-						NULL,0,NULL,
-						&(column[i].unsignednumber));
-				if (erg!=SQL_SUCCESS &&
-					erg!=SQL_SUCCESS_WITH_INFO) {
-					return false;
-				}
-
-				// zero fill
-
-				// binary
-
-				// autoincrement
-				erg=SQLColAttribute(stmt,i+1,
-						SQL_DESC_AUTO_UNIQUE_VALUE,
-						NULL,0,NULL,
-						&(column[i].autoincrement));
-				if (erg!=SQL_SUCCESS &&
-					erg!=SQL_SUCCESS_WITH_INFO) {
-					return false;
-				}
-
-				// table name
-				erg=SQLColAttribute(stmt,i+1,
-						SQL_DESC_BASE_TABLE_NAME,
-						column[i].table,4096,
-						(SQLSMALLINT *)
-						&(column[i].tablelength),
-						NULL);
-				if (erg!=SQL_SUCCESS &&
-					erg!=SQL_SUCCESS_WITH_INFO) {
-					return false;
-				}
-				// Some databases (Hive) like to return
-				// columns as table.column.
-				// If the column name was table.column then
-				// split it and override the table name.
-				char	*dot=charstring::findFirst(
-							column[i].name,'.');
-				if (dot) {
-					char	*col=dot+1;
-					*dot='\0';
-					charstring::copy(column[i].table,
-								column[i].name);
-					charstring::copy(columnnamescratch,col);
-					charstring::copy(column[i].name,
-							columnnamescratch);
+				if (charstring::compare(odbcconn->odbcversion,"2")) {
+					// column name
+					erg=SQLColAttribute(stmt,i+1,SQL_DESC_LABEL,
+							column[i].name,4096,
+							(SQLSMALLINT *)
+							&(column[i].namelength),
+							NULL);
+					if (erg!=SQL_SUCCESS &&
+						erg!=SQL_SUCCESS_WITH_INFO) {
+						return false;
+					}
 					column[i].namelength=
-						charstring::length(
-							column[i].name);
-				}
-				column[i].tablelength=
-					charstring::length(column[i].table);
+						charstring::length(column[i].name);
 
-#else
-				// column name
-				erg=SQLColAttributes(stmt,i+1,
-						SQL_COLUMN_LABEL,
-						column[i].name,4096,
-						(SQLSMALLINT *)
-						&(column[i].namelength),
-						NULL);
-				if (erg!=SQL_SUCCESS &&
-					erg!=SQL_SUCCESS_WITH_INFO) {
-					return false;
-				}
-				// FIXME: above we reset namelength
-				// to length(name)...
+					// column length
+					erg=SQLColAttribute(stmt,i+1,SQL_DESC_LENGTH,
+							NULL,0,NULL,
+							&(column[i].length));
+					if (erg!=SQL_SUCCESS &&
+						erg!=SQL_SUCCESS_WITH_INFO) {
+						return false;
+					}
+		
+					// column type
+					erg=SQLColAttribute(stmt,i+1,SQL_DESC_TYPE,
+							NULL,0,NULL,
+							&(column[i].type));
+					if (erg!=SQL_SUCCESS &&
+						erg!=SQL_SUCCESS_WITH_INFO) {
+						return false;
+					}
 
-				// column length
-				erg=SQLColAttributes(stmt,i+1,
-						SQL_COLUMN_LENGTH,
-						NULL,0,NULL,
-						&(column[i].length));
-				if (erg!=SQL_SUCCESS &&
-					erg!=SQL_SUCCESS_WITH_INFO) {
-					return false;
-				}
+					// column precision
+					erg=SQLColAttribute(stmt,i+1,SQL_DESC_PRECISION,
+							NULL,0,NULL,
+							&(column[i].precision));
+					// Some drivers (Redshift) like to return -1
+					// for the precision of some (TEXT/NTEXT)
+					// columns.  This wreaks havoc on the client
+					// side, as the value is interpreted as 2^32-1.
+					// Override the -1 with the length.
+					if (column[i].precision==-1) {
+						column[i].precision=column[i].length;
+					}
+					if (erg!=SQL_SUCCESS &&
+						erg!=SQL_SUCCESS_WITH_INFO) {
+						return false;
+					}
 
-				// column type
-				erg=SQLColAttributes(stmt,i+1,
-						SQL_COLUMN_TYPE,
-						NULL,0,NULL,
-						&(column[i].type));
-				if (erg!=SQL_SUCCESS &&
-					erg!=SQL_SUCCESS_WITH_INFO) {
-					return false;
-				}
+					// column scale
+					erg=SQLColAttribute(stmt,i+1,SQL_DESC_SCALE,
+							NULL,0,NULL,
+							&(column[i].scale));
+					if (erg!=SQL_SUCCESS &&
+						erg!=SQL_SUCCESS_WITH_INFO) {
+						return false;
+					}
 
-				// column precision
-				erg=SQLColAttributes(stmt,i+1,
-						SQL_COLUMN_PRECISION,
-						NULL,0,NULL,
-						&(column[i].precision));
-				if (erg!=SQL_SUCCESS &&
-					erg!=SQL_SUCCESS_WITH_INFO) {
-					return false;
-				}
+					// column nullable
+					erg=SQLColAttribute(stmt,i+1,SQL_DESC_NULLABLE,
+							NULL,0,NULL,
+							&(column[i].nullable));
+					if (erg!=SQL_SUCCESS &&
+						erg!=SQL_SUCCESS_WITH_INFO) {
+						return false;
+					}
 
-				// column scale
-				erg=SQLColAttributes(stmt,i+1,
-						SQL_COLUMN_SCALE,
-						NULL,0,NULL,
-						&(column[i].scale));
-				if (erg!=SQL_SUCCESS &&
-					erg!=SQL_SUCCESS_WITH_INFO) {
-					return false;
-				}
+					// primary key
 
-				// column nullable
-				erg=SQLColAttributes(stmt,i+1,
-						SQL_COLUMN_NULLABLE,
-						NULL,0,NULL,
-						&(column[i].nullable));
-				if (erg!=SQL_SUCCESS &&
-					erg!=SQL_SUCCESS_WITH_INFO) {
-					return false;
-				}
+					// unique
 
-				// primary key
+					// part of key
 
-				// unique
+					// unsigned number
+					erg=SQLColAttribute(stmt,i+1,SQL_DESC_UNSIGNED,
+							NULL,0,NULL,
+							&(column[i].unsignednumber));
+					if (erg!=SQL_SUCCESS &&
+						erg!=SQL_SUCCESS_WITH_INFO) {
+						return false;
+					}
 
-				// part of key
+					// zero fill
 
-				// unsigned number
-				erg=SQLColAttributes(stmt,i+1,
-						SQL_COLUMN_UNSIGNED,
-						NULL,0,NULL,
-						&(column[i].unsignednumber));
-				if (erg!=SQL_SUCCESS &&
-					erg!=SQL_SUCCESS_WITH_INFO) {
-					return false;
-				}
+					// binary
 
-				// zero fill
+					// autoincrement
+					erg=SQLColAttribute(stmt,i+1,
+							SQL_DESC_AUTO_UNIQUE_VALUE,
+							NULL,0,NULL,
+							&(column[i].autoincrement));
+					if (erg!=SQL_SUCCESS &&
+						erg!=SQL_SUCCESS_WITH_INFO) {
+						return false;
+					}
 
-				// binary
-
-				// autoincrement
-				#ifdef SQL_DESC_AUTO_UNIQUE_VALUE
-				erg=SQLColAttributes(stmt,i+1,
-						SQL_COLUMN_AUTO_INCREMENT,
-						NULL,0,NULL,
-						&(column[i].autoincrement));
-				if (erg!=SQL_SUCCESS &&
-					erg!=SQL_SUCCESS_WITH_INFO) {
-					return false;
-				}
-				#else
-				column[i].autoincrement=0;
-				#endif
-
-				// table name
-				erg=SQLColAttributes(stmt,i+1,
-						SQL_COLUMN_TABLE_NAME,
-						column[i].table,4096,
-						(SQLSMALLINT *)
-						&(column[i].tablelength),
-						NULL);
-				if (erg!=SQL_SUCCESS &&
-					erg!=SQL_SUCCESS_WITH_INFO) {
-					return false;
-				}
-				// Some databases (Hive) like to return
-				// columns as table.column.
-				// If the column name was table.column then
-				// split it and override the table name.
-				char	*dot=charstring::findFirst(
-							column[i].name,'.');
-				if (dot) {
-					char	*col=dot+1;
-					*dot='\0';
-					charstring::copy(column[i].table,
+					// table name
+					erg=SQLColAttribute(stmt,i+1,
+							SQL_DESC_BASE_TABLE_NAME,
+							column[i].table,4096,
+							(SQLSMALLINT *)
+							&(column[i].tablelength),
+							NULL);
+					if (erg!=SQL_SUCCESS &&
+						erg!=SQL_SUCCESS_WITH_INFO) {
+						return false;
+					}
+					// Some databases (Hive) like to return
+					// columns as table.column.
+					// If the column name was table.column then
+					// split it and override the table name.
+					char	*dot=charstring::findFirst(
+								column[i].name,'.');
+					if (dot) {
+						char	*col=dot+1;
+						*dot='\0';
+						charstring::copy(column[i].table,
+									column[i].name);
+						charstring::copy(columnnamescratch,col);
+						charstring::copy(column[i].name,
+								columnnamescratch);
+						column[i].namelength=
+							charstring::length(
 								column[i].name);
-					charstring::copy(columnnamescratch,col);
-					charstring::copy(column[i].name,
-							columnnamescratch);
-					column[i].namelength=
-						charstring::length(
-							column[i].name);
+					}
+					column[i].tablelength=
+						charstring::length(column[i].table);
 				}
-				column[i].tablelength=
-					charstring::length(column[i].table);
+				else {
+#endif
+
+					// column name
+					erg=SQLColAttributes(stmt,i+1,
+							SQL_COLUMN_LABEL,
+							column[i].name,4096,
+							(SQLSMALLINT *)
+							&(column[i].namelength),
+							NULL);
+					if (erg!=SQL_SUCCESS &&
+						erg!=SQL_SUCCESS_WITH_INFO) {
+						return false;
+					}
+					// FIXME: above we reset namelength
+					// to length(name)...
+
+					// column length
+					erg=SQLColAttributes(stmt,i+1,
+							SQL_COLUMN_LENGTH,
+							NULL,0,NULL,
+							&(column[i].length));
+					if (erg!=SQL_SUCCESS &&
+						erg!=SQL_SUCCESS_WITH_INFO) {
+						return false;
+					}
+
+					// column type
+					erg=SQLColAttributes(stmt,i+1,
+							SQL_COLUMN_TYPE,
+							NULL,0,NULL,
+							&(column[i].type));
+					if (erg!=SQL_SUCCESS &&
+						erg!=SQL_SUCCESS_WITH_INFO) {
+						return false;
+					}
+
+					// column precision
+					erg=SQLColAttributes(stmt,i+1,
+							SQL_COLUMN_PRECISION,
+							NULL,0,NULL,
+							&(column[i].precision));
+					if (erg!=SQL_SUCCESS &&
+						erg!=SQL_SUCCESS_WITH_INFO) {
+						return false;
+					}
+
+					// column scale
+					erg=SQLColAttributes(stmt,i+1,
+							SQL_COLUMN_SCALE,
+							NULL,0,NULL,
+							&(column[i].scale));
+					if (erg!=SQL_SUCCESS &&
+						erg!=SQL_SUCCESS_WITH_INFO) {
+						return false;
+					}
+
+					// column nullable
+					erg=SQLColAttributes(stmt,i+1,
+							SQL_COLUMN_NULLABLE,
+							NULL,0,NULL,
+							&(column[i].nullable));
+					if (erg!=SQL_SUCCESS &&
+						erg!=SQL_SUCCESS_WITH_INFO) {
+						return false;
+					}
+
+					// primary key
+
+					// unique
+
+					// part of key
+
+					// unsigned number
+					erg=SQLColAttributes(stmt,i+1,
+							SQL_COLUMN_UNSIGNED,
+							NULL,0,NULL,
+							&(column[i].unsignednumber));
+					if (erg!=SQL_SUCCESS &&
+						erg!=SQL_SUCCESS_WITH_INFO) {
+						return false;
+					}
+
+					// zero fill
+
+					// binary
+
+					// autoincrement
+					#ifdef SQL_DESC_AUTO_UNIQUE_VALUE
+					erg=SQLColAttributes(stmt,i+1,
+							SQL_COLUMN_AUTO_INCREMENT,
+							NULL,0,NULL,
+							&(column[i].autoincrement));
+					if (erg!=SQL_SUCCESS &&
+						erg!=SQL_SUCCESS_WITH_INFO) {
+						return false;
+					}
+					#else
+					column[i].autoincrement=0;
+					#endif
+
+					// table name
+					erg=SQLColAttributes(stmt,i+1,
+							SQL_COLUMN_TABLE_NAME,
+							column[i].table,4096,
+							(SQLSMALLINT *)
+							&(column[i].tablelength),
+							NULL);
+					if (erg!=SQL_SUCCESS &&
+						erg!=SQL_SUCCESS_WITH_INFO) {
+						return false;
+					}
+					// Some databases (Hive) like to return
+					// columns as table.column.
+					// If the column name was table.column then
+					// split it and override the table name.
+					char	*dot=charstring::findFirst(
+								column[i].name,'.');
+					if (dot) {
+						char	*col=dot+1;
+						*dot='\0';
+						charstring::copy(column[i].table,
+									column[i].name);
+						charstring::copy(columnnamescratch,col);
+						charstring::copy(column[i].name,
+								columnnamescratch);
+						column[i].namelength=
+							charstring::length(
+								column[i].name);
+					}
+					column[i].tablelength=
+						charstring::length(column[i].table);
+#if (ODBCVER >= 0x0300)
+				}
 #endif
 			}
 		}
@@ -3938,11 +4135,12 @@ bool odbccursor::fetchRow(bool *error) {
 		return false;
 	}
 	
-	#ifdef HAVE_SQLCONNECTW
-	if (odbcconn->unicode) {
+	#if defined(HAVE_SQLCONNECTW) || defined(HAVE_WINDOWS)
+//	if (odbcconn->unicode) {
 		// convert wvarchar/wchar fields to user coding
 		uint32_t	maxfieldlength=conn->cont->getMaxFieldLength();
 		for (int i=0; i<ncols; i++) {
+			#ifdef HAVE_SQLCONNECTW
 			if (column[i].type==SQL_WVARCHAR ||
 					column[i].type==SQL_WCHAR) {
 				if (indicator[i]!=SQL_NULL_DATA && field[i]) {
@@ -3969,8 +4167,27 @@ bool odbccursor::fetchRow(bool *error) {
 					delete[] u;
 				}
 			}
+			#endif
+			#ifdef HAVE_WINDOWS
+			if (column[i].type==SQL_VARCHAR ||
+					column[i].type==SQL_CHAR) {
+				if (indicator[i]!=SQL_NULL_DATA && field[i]) {
+					char	*err=NULL;
+					char	*u=convertCharset(
+						field[i],odbcconn->ansicodepage,
+						"UTF-8",&err);
+					size_t	len=charstring::length(u);
+					if (len>=maxfieldlength) {
+						len=maxfieldlength-1;
+					}
+					charstring::copy(field[i],u,len);
+					indicator[i]=len;
+					delete[] u;
+				}
+			}
+			#endif
 		}
-	}
+//	}
 	#endif
 
 	return true;
